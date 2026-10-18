@@ -1,489 +1,422 @@
-import { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect } from 'react';
 import { createClient } from '@supabase/supabase-js';
-import {
-  Hourglass, Plus, Eye, EyeOff, LogOut, Flame, BarChart3, History as HistoryIcon,
-  Home, Trash2, X, Undo2, Loader2, Trophy, Mail, Lock, Pencil, Sparkles, Timer,
+import { 
+  Eye, EyeOff, Activity, Clock, Plus, Target, 
+  RotateCcw, Trash2, LogOut, CheckCircle2, Zap
 } from 'lucide-react';
 
-/* ───────────── Supabase ───────────── */
-const URL_ = import.meta.env.VITE_SUPABASE_URL;
-const KEY_ = import.meta.env.VITE_SUPABASE_ANON_KEY;
-const supabase = URL_ && KEY_ ? createClient(URL_, KEY_) : null;
+// ==========================================
+// 1. SUPABASE INITIALIZATION
+// ==========================================
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
-/* ───────────── Helpers ───────────── */
-const pad = (n) => String(n).padStart(2, '0');
-const dk = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-const weekStart = (d) => { const x = new Date(d); x.setDate(x.getDate() - ((x.getDay() + 6) % 7)); return dk(x); };
-const periodKey = (cadence, d = new Date()) => (cadence === 'weekly' ? 'W' + weekStart(d) : 'D' + dk(d));
-const fmt = (m) => {
-  m = Math.max(0, Math.round(m));
-  const h = Math.floor(m / 60), r = m % 60;
-  return h && r ? `${h}h ${r}m` : h ? `${h}h` : `${r}m`;
+// Check for missing env variables for better DX
+const isConfigured = supabaseUrl && supabaseKey;
+const supabase = isConfigured ? createClient(supabaseUrl, supabaseKey) : null;
+
+// ==========================================
+// 2. UTILITY FUNCTIONS
+// ==========================================
+const formatTime = (totalMins) => {
+  const h = Math.floor(Math.abs(totalMins) / 60);
+  const m = Math.abs(totalMins) % 60;
+  if (h > 0 && m > 0) return `${h}h ${m}m`;
+  if (h > 0) return `${h}h`;
+  return `${m}m`;
 };
-const EMPTY = { entries: [], periods: {}, archive: [], xp: 0 };
-const loadStore = (uid) => {
-  try { return { ...EMPTY, ...JSON.parse(localStorage.getItem('chronospulse:' + uid) || '{}') }; }
-  catch { return { ...EMPTY }; }
+
+// ==========================================
+// 3. COMPONENTS
+// ==========================================
+
+// --- Visual Gamification Ring ---
+const PulseRing = ({ percent, label, colorHex }) => {
+  const r = 36;
+  const circ = 2 * Math.PI * r;
+  const offset = circ - (Math.min(percent, 100) / 100) * circ;
+  
+  return (
+    <div className="flex flex-col items-center">
+      <div className="relative flex justify-center items-center w-20 h-20">
+        <svg className="w-full h-full transform -rotate-90">
+          <circle cx="50%" cy="50%" r={r} fill="transparent" stroke="#1e293b" strokeWidth="6" />
+          <circle 
+            cx="50%" cy="50%" r={r} fill="transparent" stroke={colorHex} strokeWidth="6" 
+            strokeDasharray={circ} strokeDashoffset={offset}
+            className="transition-all duration-1000 ease-out"
+            strokeLinecap="round"
+          />
+        </svg>
+        <div className="absolute flex flex-col items-center">
+           <span className="text-sm font-bold text-slate-100">{Math.round(percent)}%</span>
+        </div>
+      </div>
+      <span className="text-[10px] text-slate-400 mt-1 uppercase tracking-wider font-semibold">{label}</span>
+    </div>
+  );
 };
-const saveStore = (uid, s) => { try { localStorage.setItem('chronospulse:' + uid, JSON.stringify(s)); } catch { /* storage full/blocked */ } };
-const XP_PER_LEVEL = 300; // 5 hours of logged focus per level
-const QUICK = [5, 15, 30, 60];
 
-/* ───────────── Shared UI ───────────── */
-const inputCls = 'w-full rounded-2xl bg-white/5 border border-white/10 px-4 py-3 text-base text-slate-100 placeholder:text-slate-500 outline-none focus:border-amber-300/70 focus:ring-2 focus:ring-amber-300/20';
-
-function Logo({ size = 28 }) {
-  return (
-    <span className="inline-flex items-center justify-center rounded-xl bg-amber-300 text-[#0B1F24]" style={{ width: size + 10, height: size + 10 }}>
-      <Hourglass size={size - 6} strokeWidth={2.5} />
-    </span>
-  );
-}
-
-function Sheet({ title, onClose, children }) {
-  return (
-    <div className="fixed inset-0 z-40 flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-sm" onClick={onClose}>
-      <div className="w-full sm:max-w-md rounded-t-3xl sm:rounded-3xl bg-[#12292F] border border-white/10 p-5 pb-[calc(1.25rem+env(safe-area-inset-bottom))] shadow-2xl" onClick={(e) => e.stopPropagation()}>
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="text-lg font-semibold">{title}</h2>
-          <button onClick={onClose} aria-label="Close" className="p-2 -mr-2 rounded-full hover:bg-white/10"><X size={20} /></button>
-        </div>
-        {children}
-      </div>
-    </div>
-  );
-}
-
-/* ───────────── Setup / Splash ───────────── */
-function Setup() {
-  return (
-    <div className="min-h-screen bg-[#0B1F24] text-slate-100 grid place-items-center p-6">
-      <div className="max-w-sm text-center space-y-3">
-        <Logo size={36} />
-        <h1 className="text-xl font-semibold">Connect Supabase</h1>
-        <p className="text-slate-400 text-sm">Add <code className="text-amber-300">VITE_SUPABASE_URL</code> and <code className="text-amber-300">VITE_SUPABASE_ANON_KEY</code> to your <code>.env</code> file, then restart the dev server.</p>
-      </div>
-    </div>
-  );
-}
-const Splash = () => (
-  <div className="min-h-screen bg-[#0B1F24] grid place-items-center"><Loader2 className="animate-spin text-amber-300" /></div>
-);
-
-/* ───────────── Auth ───────────── */
-function Auth() {
-  const [mode, setMode] = useState('in');
-  const [email, setEmail] = useState('');
-  const [pw, setPw] = useState('');
-  const [show, setShow] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState(null);
-
-  const submit = async (e) => {
-    e.preventDefault();
-    setBusy(true); setMsg(null);
-    try {
-      if (mode === 'in') {
-        const { error } = await supabase.auth.signInWithPassword({ email, password: pw });
-        if (error) throw error;
-      } else {
-        const { data, error } = await supabase.auth.signUp({ email, password: pw });
-        if (error) throw error;
-        if (!data.session) setMsg({ ok: true, text: 'Account created. Check your email to confirm, then sign in.' });
-      }
-    } catch (err) {
-      setMsg({ ok: false, text: err.message || 'Something went wrong. Try again.' });
-    } finally { setBusy(false); }
-  };
-
-  return (
-    <div className="min-h-screen bg-[#0B1F24] text-slate-100 flex flex-col justify-center px-6 py-10 pt-[calc(2.5rem+env(safe-area-inset-top))]">
-      <div className="w-full max-w-sm mx-auto">
-        <Logo size={36} />
-        <h1 className="mt-6 text-4xl font-bold tracking-tight">ChronosPulse</h1>
-        <p className="mt-2 text-slate-400">Give every goal a time budget. Spend it on purpose.</p>
-
-        <form onSubmit={submit} className="mt-8 space-y-3">
-          <div className="relative">
-            <Mail size={18} className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500" />
-            <input type="email" required autoComplete="email" placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} className={inputCls + ' pl-11'} />
-          </div>
-          <div className="relative">
-            <Lock size={18} className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500" />
-            <input type={show ? 'text' : 'password'} required minLength={6} autoComplete={mode === 'in' ? 'current-password' : 'new-password'} placeholder="Password (6+ characters)" value={pw} onChange={(e) => setPw(e.target.value)} className={inputCls + ' pl-11 pr-12'} />
-            <button type="button" onClick={() => setShow((s) => !s)} aria-label={show ? 'Hide password' : 'Show password'} className="absolute right-2 top-1/2 -translate-y-1/2 p-2 text-slate-400 hover:text-amber-300">
-              {show ? <EyeOff size={20} /> : <Eye size={20} />}
-            </button>
-          </div>
-          {msg && <p className={`text-sm rounded-xl px-3 py-2 ${msg.ok ? 'bg-emerald-400/10 text-emerald-300' : 'bg-rose-400/10 text-rose-300'}`}>{msg.text}</p>}
-          <button disabled={busy} className="w-full rounded-2xl bg-amber-300 text-[#0B1F24] font-semibold py-3.5 active:scale-[.98] transition disabled:opacity-60 flex items-center justify-center gap-2">
-            {busy && <Loader2 size={18} className="animate-spin" />}{mode === 'in' ? 'Sign in' : 'Create account'}
-          </button>
-        </form>
-        <button onClick={() => { setMode(mode === 'in' ? 'up' : 'in'); setMsg(null); }} className="mt-5 w-full text-sm text-slate-400 hover:text-amber-300">
-          {mode === 'in' ? 'New here? Create an account' : 'Already have an account? Sign in'}
-        </button>
-      </div>
-    </div>
-  );
-}
-
-/* ───────────── Task form & custom log ───────────── */
-function TaskForm({ task, onSave, onClose }) {
-  const [title, setTitle] = useState(task?.title || '');
-  const [cadence, setCadence] = useState(task?.cadence || 'daily');
-  const [h, setH] = useState(task ? Math.floor(task.target_minutes / 60) : 1);
-  const [m, setM] = useState(task ? task.target_minutes % 60 : 0);
-  const target = (Number(h) || 0) * 60 + (Number(m) || 0);
-  const ok = title.trim() && target > 0;
-  return (
-    <Sheet title={task ? 'Edit budget' : 'New time budget'} onClose={onClose}>
-      <div className="space-y-4">
-        <input autoFocus className={inputCls} placeholder="What are you spending time on?" value={title} onChange={(e) => setTitle(e.target.value)} maxLength={60} />
-        <div className="grid grid-cols-2 gap-1 p-1 rounded-2xl bg-white/5">
-          {['daily', 'weekly'].map((c) => (
-            <button key={c} type="button" onClick={() => setCadence(c)} className={`py-2.5 rounded-xl text-sm font-medium capitalize ${cadence === c ? 'bg-amber-300 text-[#0B1F24]' : 'text-slate-400'}`}>{c}</button>
-          ))}
-        </div>
-        <div>
-          <p className="text-sm text-slate-400 mb-2">Budget per {cadence === 'daily' ? 'day' : 'week'}</p>
-          <div className="flex gap-3 items-center">
-            <input type="number" min="0" max="168" inputMode="numeric" className={inputCls} value={h} onChange={(e) => setH(e.target.value)} /><span className="text-slate-400">h</span>
-            <input type="number" min="0" max="59" inputMode="numeric" className={inputCls} value={m} onChange={(e) => setM(e.target.value)} /><span className="text-slate-400">m</span>
-          </div>
-        </div>
-        <button disabled={!ok} onClick={() => onSave({ title: title.trim(), cadence, target_minutes: target })} className="w-full rounded-2xl bg-amber-300 text-[#0B1F24] font-semibold py-3.5 disabled:opacity-40">
-          {task ? 'Save changes' : 'Create budget'}
-        </button>
-      </div>
-    </Sheet>
-  );
-}
-
-function CustomLog({ task, onLog, onClose }) {
-  const [v, setV] = useState('');
-  return (
-    <Sheet title={`Log time · ${task.title}`} onClose={onClose}>
-      <form onSubmit={(e) => { e.preventDefault(); const n = parseInt(v, 10); if (n > 0) onLog(n); }} className="flex gap-3">
-        <input autoFocus type="number" min="1" inputMode="numeric" placeholder="Minutes" className={inputCls} value={v} onChange={(e) => setV(e.target.value)} />
-        <button className="rounded-2xl bg-amber-300 text-[#0B1F24] font-semibold px-6">Log</button>
-      </form>
-    </Sheet>
-  );
-}
-
-/* ───────────── Task card: the budget drains as you log ───────────── */
-function TaskCard({ task, onLog, onUndo, onCustom, onEdit }) {
+// --- Task Card Component ---
+const TaskCard = ({ task, onLogTime, onReset, onDelete }) => {
   const remaining = task.target_minutes - task.logged_minutes;
-  const done = remaining <= 0;
-  const left = Math.max(0, Math.min(100, (remaining / task.target_minutes) * 100));
+  const isOvertime = remaining < 0;
+  const percent = Math.min((task.logged_minutes / task.target_minutes) * 100, 100);
+  const isComplete = percent >= 100;
+  
   return (
-    <article className={`rounded-3xl p-5 border ${done ? 'bg-emerald-400/10 border-emerald-300/30' : 'bg-[#12292F] border-white/10'}`}>
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <h3 className="font-semibold truncate">{task.title}</h3>
-          <p className="text-xs text-slate-400 mt-0.5">{fmt(task.target_minutes)} per {task.cadence === 'daily' ? 'day' : 'week'}</p>
+    <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 shadow-lg relative overflow-hidden group">
+      {/* Top Edge Progress Glow */}
+      <div 
+        className={`absolute top-0 left-0 h-1 transition-all duration-500 ${isComplete ? 'bg-emerald-500' : 'bg-gradient-to-r from-indigo-500 to-purple-500'}`} 
+        style={{ width: `${percent}%`}} 
+      />
+      
+      <div className="flex justify-between items-start mb-4 pt-1">
+        <div className="pr-3">
+           <h3 className="text-base font-semibold text-slate-100 leading-tight mb-1">{task.title}</h3>
+           <p className="text-xs text-slate-400 flex items-center gap-1">
+             <Target size={12} /> {formatTime(task.target_minutes)} {task.cadence}
+           </p>
         </div>
-        <button onClick={onEdit} aria-label="Edit" className="p-2 -m-2 text-slate-500 hover:text-amber-300"><Pencil size={16} /></button>
+        <div className="text-right whitespace-nowrap">
+           <span className={`text-xl font-bold ${isComplete ? 'text-emerald-400' : 'text-white'}`}>
+             {formatTime(Math.abs(remaining))}
+           </span>
+           <p className="text-[10px] text-slate-400 uppercase tracking-wide">
+             {isOvertime ? '+ overtime' : 'remaining'}
+           </p>
+        </div>
       </div>
 
-      <div className="mt-4 flex items-baseline gap-2">
-        {done ? (
-          <>
-            <Sparkles className="text-emerald-300 self-center" size={26} />
-            <span className="text-3xl font-bold text-emerald-300">Quota met</span>
-            {remaining < 0 && <span className="text-sm text-emerald-200/80">+{fmt(-remaining)} extra</span>}
-          </>
-        ) : (
-          <>
-            <span className="text-4xl font-bold tabular-nums tracking-tight text-amber-300">{fmt(remaining)}</span>
-            <span className="text-sm text-slate-400">left</span>
-          </>
-        )}
+      {/* Quick Actions (Time Chunks) */}
+      <div className="flex items-center gap-2 mt-2">
+         <button onClick={() => onLogTime(task, 15)} className="flex-1 bg-slate-800/50 hover:bg-indigo-600/20 hover:text-indigo-400 text-slate-300 border border-slate-700 py-1.5 rounded-lg text-xs font-semibold transition">
+           +15m
+         </button>
+         <button onClick={() => onLogTime(task, 30)} className="flex-1 bg-slate-800/50 hover:bg-indigo-600/20 hover:text-indigo-400 text-slate-300 border border-slate-700 py-1.5 rounded-lg text-xs font-semibold transition">
+           +30m
+         </button>
+         <button onClick={() => onLogTime(task, 60)} className="flex-1 bg-slate-800/50 hover:bg-indigo-600/20 hover:text-indigo-400 text-slate-300 border border-slate-700 py-1.5 rounded-lg text-xs font-semibold transition">
+           +1h
+         </button>
+         
+         {/* Manage Dropdown / Icons */}
+         <div className="flex items-center gap-1 ml-2 border-l border-slate-800 pl-2">
+            <button onClick={() => onReset(task)} className="p-1.5 text-slate-500 hover:text-rose-400 hover:bg-rose-400/10 rounded-md transition" title="Reset Time">
+              <RotateCcw size={14} />
+            </button>
+            <button onClick={() => onDelete(task.id)} className="p-1.5 text-slate-500 hover:text-red-500 hover:bg-red-500/10 rounded-md transition" title="Delete Task">
+              <Trash2 size={14} />
+            </button>
+         </div>
       </div>
-
-      {/* sand bar: shrinks as time is logged */}
-      <div className="mt-3 h-3 rounded-full bg-white/10 overflow-hidden" role="progressbar" aria-valuenow={Math.round(100 - left)} aria-valuemin={0} aria-valuemax={100}>
-        <div className={`h-full rounded-full transition-all duration-500 ${done ? 'bg-emerald-300' : 'bg-amber-300'}`} style={{ width: `${done ? 100 : left}%` }} />
-      </div>
-      <p className="mt-1.5 text-xs text-slate-400 tabular-nums">{fmt(task.logged_minutes)} logged</p>
-
-      <div className="mt-4 flex flex-wrap gap-2">
-        {QUICK.map((q) => (
-          <button key={q} onClick={() => onLog(q)} className="px-4 py-2 rounded-full bg-white/10 text-sm font-medium active:scale-95 hover:bg-amber-300 hover:text-[#0B1F24] transition">+{q}m</button>
-        ))}
-        <button onClick={onCustom} aria-label="Custom amount" className="px-3 py-2 rounded-full bg-white/5 text-slate-300 active:scale-95"><Timer size={16} /></button>
-        <button onClick={onUndo} disabled={task.logged_minutes <= 0} aria-label="Undo last entry" className="px-3 py-2 rounded-full bg-white/5 text-slate-300 active:scale-95 disabled:opacity-30"><Undo2 size={16} /></button>
-      </div>
-    </article>
+    </div>
   );
-}
+};
 
-/* ───────────── Main tracker ───────────── */
-function Tracker({ user }) {
-  const uid = user.id;
+// --- Dashboard Component ---
+function Dashboard({ session }) {
   const [tasks, setTasks] = useState([]);
-  const [store, setStore] = useState(() => loadStore(uid));
   const [loading, setLoading] = useState(true);
-  const [tab, setTab] = useState('today');
-  const [form, setForm] = useState(null); // null | 'new' | task
-  const [custom, setCustom] = useState(null);
-  const [toast, setToast] = useState(null);
+  const [showAddModal, setShowAddModal] = useState(false);
 
-  const say = useCallback((text) => { setToast(text); setTimeout(() => setToast(null), 2600); }, []);
-  const patchStore = useCallback((fn) => setStore((s) => { const n = fn(s); saveStore(uid, n); return n; }), [uid]);
+  // New Task State
+  const [title, setTitle] = useState('');
+  const [cadence, setCadence] = useState('daily');
+  const [hours, setHours] = useState('');
+  const [minutes, setMinutes] = useState('');
 
-  // Load tasks, then roll over any expired daily/weekly periods
   useEffect(() => {
-    let alive = true;
-    (async () => {
-      const { data, error } = await supabase.from('tasks').select('*').eq('user_id', uid).order('created_at', { ascending: true });
-      if (!alive) return;
-      if (error) { say(error.message); setLoading(false); return; }
-      const s = loadStore(uid);
-      const periods = { ...s.periods }, archive = [...s.archive];
-      const rows = [];
-      for (const t of data) {
-        const key = periodKey(t.cadence);
-        const prev = periods[t.id];
-        if (prev && prev !== key) {
-          archive.push({ id: t.id, title: t.title, cadence: t.cadence, period: prev, target: t.target_minutes, logged: t.logged_minutes });
-          if (t.logged_minutes > 0) await supabase.from('tasks').update({ logged_minutes: 0 }).eq('id', t.id);
-          rows.push({ ...t, logged_minutes: 0 });
-        } else rows.push(t);
-        periods[t.id] = key;
-      }
-      const next = { ...s, periods, archive: archive.slice(-300) };
-      saveStore(uid, next);
-      setStore(next); setTasks(rows); setLoading(false);
-    })();
-    return () => { alive = false; };
-  }, [uid, say]);
+    fetchTasks();
+  }, []);
 
-  const applyLog = async (task, delta, { undo = false } = {}) => {
-    const next = Math.max(0, task.logged_minutes + delta);
-    if (next === task.logged_minutes) return;
-    const real = next - task.logged_minutes;
-    const prev = task.logged_minutes;
-    setTasks((ts) => ts.map((t) => (t.id === task.id ? { ...t, logged_minutes: next } : t)));
-    const { error } = await supabase.from('tasks').update({ logged_minutes: next }).eq('id', task.id);
-    if (error) {
-      setTasks((ts) => ts.map((t) => (t.id === task.id ? { ...t, logged_minutes: prev } : t)));
-      return say(error.message);
+  const fetchTasks = async () => {
+    const { data, error } = await supabase
+      .from('tasks')
+      .select('*')
+      .eq('user_id', session.user.id)
+      .order('created_at', { ascending: false });
+    if (!error && data) setTasks(data);
+    setLoading(false);
+  };
+
+  const handleAddTask = async (e) => {
+    e.preventDefault();
+    if (!title) return;
+    
+    const targetMins = (parseInt(hours || 0) * 60) + parseInt(minutes || 0);
+    if (targetMins === 0) return alert("Please set a time budget.");
+
+    const newTask = {
+      user_id: session.user.id,
+      title,
+      cadence,
+      target_minutes: targetMins,
+      logged_minutes: 0,
+      created_at: new Date().toISOString()
+    };
+
+    const { data, error } = await supabase.from('tasks').insert([newTask]).select();
+    if (!error && data) {
+      setTasks([data[0], ...tasks]);
+      setShowAddModal(false);
+      setTitle(''); setHours(''); setMinutes('');
     }
-    patchStore((s) => {
-      let entries = s.entries;
-      if (undo) {
-        const i = [...entries].reverse().findIndex((e) => e.taskId === task.id && e.minutes > 0);
-        if (i >= 0) entries = entries.filter((_, idx) => idx !== entries.length - 1 - i);
-      } else {
-        entries = [...entries, { taskId: task.id, title: task.title, minutes: real, ts: Date.now() }].slice(-600);
-      }
-      return { ...s, entries, xp: Math.max(0, s.xp + real) };
-    });
-    if (!undo && prev < task.target_minutes && next >= task.target_minutes) say(`🎉 ${task.title}: quota met!`);
   };
 
-  const undo = (task) => {
-    const last = [...store.entries].reverse().find((e) => e.taskId === task.id && e.minutes > 0);
-    applyLog(task, -(last ? Math.min(last.minutes, task.logged_minutes) : 5), { undo: true });
+  const handleLogTime = async (task, minsToAdd) => {
+    const newLogged = task.logged_minutes + minsToAdd;
+    // Optimistic UI Update
+    setTasks(tasks.map(t => t.id === task.id ? { ...t, logged_minutes: newLogged } : t));
+    await supabase.from('tasks').update({ logged_minutes: newLogged }).eq('id', task.id);
   };
 
-  const saveTask = async (vals) => {
-    if (form === 'new') {
-      const { data, error } = await supabase.from('tasks').insert({ ...vals, user_id: uid, logged_minutes: 0 }).select().single();
-      if (error) return say(error.message);
-      setTasks((t) => [...t, data]);
-      patchStore((s) => ({ ...s, periods: { ...s.periods, [data.id]: periodKey(data.cadence) } }));
-    } else {
-      const { data, error } = await supabase.from('tasks').update(vals).eq('id', form.id).select().single();
-      if (error) return say(error.message);
-      setTasks((t) => t.map((x) => (x.id === data.id ? data : x)));
-      if (vals.cadence !== form.cadence) patchStore((s) => ({ ...s, periods: { ...s.periods, [data.id]: periodKey(data.cadence) } }));
-    }
-    setForm(null);
+  const handleResetTask = async (task) => {
+    setTasks(tasks.map(t => t.id === task.id ? { ...t, logged_minutes: 0 } : t));
+    await supabase.from('tasks').update({ logged_minutes: 0 }).eq('id', task.id);
   };
 
-  const removeTask = async () => {
-    if (!window.confirm(`Delete “${form.title}”? Its history stays in this device's log.`)) return;
-    const { error } = await supabase.from('tasks').delete().eq('id', form.id);
-    if (error) return say(error.message);
-    setTasks((t) => t.filter((x) => x.id !== form.id));
-    setForm(null);
+  const handleDeleteTask = async (taskId) => {
+    if(!window.confirm("Delete this budget?")) return;
+    setTasks(tasks.filter(t => t.id !== taskId));
+    await supabase.from('tasks').delete().eq('id', taskId);
   };
 
-  /* ── derived stats ── */
-  const stats = useMemo(() => {
-    const today = dk(new Date()), wk = weekStart(new Date());
-    const byDay = {};
-    store.entries.forEach((e) => { const k = dk(new Date(e.ts)); byDay[k] = (byDay[k] || 0) + e.minutes; });
-    const days = Array.from({ length: 7 }, (_, i) => { const d = new Date(); d.setDate(d.getDate() - (6 - i)); return { key: dk(d), label: d.toLocaleDateString(undefined, { weekday: 'short' }), min: byDay[dk(d)] || 0 }; });
-    const weekMin = Object.entries(byDay).filter(([k]) => weekStart(new Date(k + 'T12:00:00')) === wk).reduce((a, [, v]) => a + v, 0);
-    let streak = 0; const c = new Date();
-    if (!byDay[dk(c)]) c.setDate(c.getDate() - 1);
-    while (byDay[dk(c)] > 0) { streak++; c.setDate(c.getDate() - 1); }
-    const crushed = store.archive.filter((a) => a.logged >= a.target).length + tasks.filter((t) => t.logged_minutes >= t.target_minutes).length;
-    const perTask = {}; store.entries.forEach((e) => { perTask[e.title] = (perTask[e.title] || 0) + e.minutes; });
-    return { todayMin: byDay[today] || 0, weekMin, days, streak, crushed, perTask, level: Math.floor(store.xp / XP_PER_LEVEL) + 1, lvlPct: ((store.xp % XP_PER_LEVEL) / XP_PER_LEVEL) * 100 };
-  }, [store, tasks]);
+  const dailyTasks = tasks.filter(t => t.cadence === 'daily');
+  const weeklyTasks = tasks.filter(t => t.cadence === 'weekly');
 
-  const totals = useMemo(() => ({
-    left: tasks.reduce((a, t) => a + Math.max(0, t.target_minutes - t.logged_minutes), 0),
-    met: tasks.filter((t) => t.logged_minutes >= t.target_minutes).length,
-  }), [tasks]);
+  const calcProgress = (list) => {
+    if (list.length === 0) return 0;
+    const tTarget = list.reduce((a, b) => a + b.target_minutes, 0);
+    const tLogged = list.reduce((a, b) => a + b.logged_minutes, 0);
+    return tTarget === 0 ? 0 : (tLogged / tTarget) * 100;
+  };
 
-  const grouped = useMemo(() => {
-    const g = {}; [...store.entries].reverse().forEach((e) => { const k = dk(new Date(e.ts)); (g[k] ||= []).push(e); });
-    return Object.entries(g);
-  }, [store.entries]);
+  const dailyProg = calcProgress(dailyTasks);
+  const weeklyProg = calcProgress(weeklyTasks);
+  const totalProg = calcProgress(tasks);
 
-  const maxDay = Math.max(60, ...stats.days.map((d) => d.min));
-  const tabs = [['today', Home, 'Budgets'], ['overview', BarChart3, 'Overview'], ['history', HistoryIcon, 'History']];
+  // Gamification logic
+  let pulseStatus = { text: 'Flatline', color: 'text-slate-500' };
+  if (totalProg > 0) pulseStatus = { text: 'Faint', color: 'text-rose-400' };
+  if (totalProg > 30) pulseStatus = { text: 'Steady', color: 'text-indigo-400' };
+  if (totalProg > 70) pulseStatus = { text: 'Strong', color: 'text-emerald-400' };
+  if (totalProg >= 100) pulseStatus = { text: 'Overdrive', color: 'text-amber-400' };
+
+  if (loading) return <div className="flex h-screen items-center justify-center"><Activity className="animate-spin text-rose-500" size={32} /></div>;
 
   return (
-    <div className="min-h-screen bg-[#0B1F24] text-slate-100">
-      <div className="max-w-md mx-auto min-h-screen flex flex-col px-4 pt-[calc(1rem+env(safe-area-inset-top))] pb-32">
-        <header className="flex items-center justify-between">
-          <div className="flex items-center gap-3"><Logo size={26} /><span className="font-bold text-lg tracking-tight">ChronosPulse</span></div>
-          <button onClick={() => supabase.auth.signOut()} aria-label="Sign out" className="p-2 rounded-full text-slate-400 hover:bg-white/10"><LogOut size={20} /></button>
-        </header>
-
-        {/* level + streak */}
-        <div className="mt-4 flex items-center gap-3 rounded-2xl bg-white/5 px-4 py-3">
-          <Trophy size={20} className="text-amber-300 shrink-0" />
-          <div className="flex-1">
-            <div className="flex justify-between text-xs text-slate-400"><span>Level {stats.level}</span><span>{fmt(store.xp % XP_PER_LEVEL)} / {fmt(XP_PER_LEVEL)}</span></div>
-            <div className="mt-1 h-1.5 rounded-full bg-white/10"><div className="h-full rounded-full bg-amber-300 transition-all" style={{ width: `${stats.lvlPct}%` }} /></div>
-          </div>
-          <div className="flex items-center gap-1 text-sm font-semibold text-orange-300" title="Day streak"><Flame size={18} />{stats.streak}</div>
+    <div className="min-h-screen bg-slate-950 text-slate-100 font-sans pb-24 selection:bg-indigo-500/30">
+      {/* Header */}
+      <header className="flex justify-between items-center py-4 px-6 border-b border-slate-900 bg-slate-950/80 backdrop-blur-md sticky top-0 z-40">
+        <div className="flex items-center gap-2">
+          <Zap className="text-rose-500 fill-rose-500/20" size={20} />
+          <h1 className="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-rose-400 to-indigo-500 tracking-tight">ChronosPulse</h1>
         </div>
+        <button onClick={() => supabase.auth.signOut()} className="text-slate-400 hover:text-rose-400 transition">
+          <LogOut size={18} />
+        </button>
+      </header>
 
-        <main className="mt-5 flex-1">
-          {loading ? <div className="grid place-items-center py-20"><Loader2 className="animate-spin text-amber-300" /></div> : tab === 'today' ? (
-            tasks.length === 0 ? (
-              <div className="text-center py-16 space-y-3">
-                <Hourglass className="mx-auto text-amber-300" size={40} />
-                <h2 className="text-xl font-semibold">No budgets yet</h2>
-                <p className="text-slate-400 text-sm">Set a daily or weekly time quota, like 2h of coursework a day.</p>
-                <button onClick={() => setForm('new')} className="mt-2 rounded-2xl bg-amber-300 text-[#0B1F24] font-semibold px-6 py-3">Create your first budget</button>
-              </div>
-            ) : (
-              <div className="space-y-4">
-                <p className="text-sm text-slate-400 px-1">{fmt(totals.left)} left across {tasks.length} budget{tasks.length > 1 ? 's' : ''} · {totals.met} met</p>
-                {tasks.map((t) => (
-                  <TaskCard key={t.id} task={t} onLog={(n) => applyLog(t, n)} onUndo={() => undo(t)} onCustom={() => setCustom(t)} onEdit={() => setForm(t)} />
-                ))}
-              </div>
-            )
-          ) : tab === 'overview' ? (
-            <div className="space-y-4">
-              <div className="grid grid-cols-3 gap-3">
-                {[['Today', fmt(stats.todayMin)], ['This week', fmt(stats.weekMin)], ['Quotas met', stats.crushed]].map(([k, v]) => (
-                  <div key={k} className="rounded-2xl bg-[#12292F] border border-white/10 p-3"><p className="text-xs text-slate-400">{k}</p><p className="mt-1 text-xl font-bold text-amber-300 tabular-nums">{v}</p></div>
-                ))}
-              </div>
-              <section className="rounded-3xl bg-[#12292F] border border-white/10 p-5">
-                <h3 className="font-semibold mb-4">Last 7 days</h3>
-                <div className="flex items-end justify-between gap-2 h-36">
-                  {stats.days.map((d, i) => (
-                    <div key={d.key} className="flex-1 flex flex-col items-center gap-1.5 h-full justify-end">
-                      <span className="text-[10px] text-slate-400 tabular-nums">{d.min ? fmt(d.min) : ''}</span>
-                      <div className={`w-full rounded-t-lg ${i === 6 ? 'bg-amber-300' : 'bg-amber-300/40'}`} style={{ height: `${Math.max(4, (d.min / maxDay) * 100)}%` }} />
-                      <span className="text-[11px] text-slate-400">{d.label}</span>
-                    </div>
-                  ))}
-                </div>
-              </section>
-              <section className="rounded-3xl bg-[#12292F] border border-white/10 p-5">
-                <h3 className="font-semibold mb-3">Where your time goes</h3>
-                {Object.keys(stats.perTask).length === 0 ? <p className="text-sm text-slate-400">Log some time to see your split.</p> : (() => {
-                  const rows = Object.entries(stats.perTask).sort((a, b) => b[1] - a[1]); const top = rows[0][1];
-                  return rows.map(([name, min]) => (
-                    <div key={name} className="mb-3 last:mb-0">
-                      <div className="flex justify-between text-sm"><span className="truncate">{name}</span><span className="text-slate-400 tabular-nums">{fmt(min)}</span></div>
-                      <div className="mt-1 h-2 rounded-full bg-white/10"><div className="h-full rounded-full bg-emerald-300/80" style={{ width: `${(min / top) * 100}%` }} /></div>
-                    </div>
-                  ));
-                })()}
-              </section>
-            </div>
+      <main className="max-w-md mx-auto p-4 space-y-8">
+        
+        {/* Pulse Score Gamification View */}
+        <section className="bg-slate-900/50 rounded-3xl p-6 border border-slate-800 flex items-center justify-between">
+           <div>
+             <h2 className="text-sm font-medium text-slate-400 uppercase tracking-widest mb-1">Pulse Intensity</h2>
+             <p className={`text-2xl font-bold ${pulseStatus.color} flex items-center gap-2`}>
+                {pulseStatus.text} {totalProg >= 100 && <CheckCircle2 size={20}/>}
+             </p>
+           </div>
+           <div className="flex gap-4">
+             <PulseRing percent={dailyProg} label="Daily" colorHex="#6366f1" />
+             <PulseRing percent={weeklyProg} label="Weekly" colorHex="#10b981" />
+           </div>
+        </section>
+
+        {/* Task Lists */}
+        <section>
+          <h2 className="text-sm font-bold text-slate-500 uppercase tracking-widest mb-3 flex items-center gap-2"><Clock size={14}/> Daily Budgets</h2>
+          {dailyTasks.length === 0 ? (
+             <p className="text-sm text-slate-600 italic">No daily budgets set. Tap + to add one.</p>
           ) : (
-            <div className="space-y-5">
-              {store.archive.length > 0 && (
-                <section>
-                  <h3 className="text-sm font-semibold text-slate-400 mb-2 px-1">Finished periods</h3>
-                  <div className="space-y-2">
-                    {[...store.archive].reverse().slice(0, 30).map((a, i) => {
-                      const hit = a.logged >= a.target;
-                      return (
-                        <div key={i} className="flex items-center justify-between rounded-2xl bg-[#12292F] border border-white/10 px-4 py-3">
-                          <div className="min-w-0"><p className="truncate text-sm font-medium">{a.title}</p><p className="text-xs text-slate-400">{a.period.slice(1)} · {a.cadence}</p></div>
-                          <span className={`text-sm font-semibold tabular-nums ${hit ? 'text-emerald-300' : 'text-slate-300'}`}>{fmt(a.logged)} / {fmt(a.target)}</span>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </section>
-              )}
-              <section>
-                <h3 className="text-sm font-semibold text-slate-400 mb-2 px-1">Time log</h3>
-                {grouped.length === 0 ? <p className="text-sm text-slate-400 px-1">Nothing logged yet. Your sessions will appear here.</p> : grouped.slice(0, 14).map(([day, es]) => (
-                  <div key={day} className="mb-4">
-                    <p className="text-xs text-slate-500 mb-1.5 px-1">{new Date(day + 'T12:00:00').toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' })} · {fmt(es.reduce((a, e) => a + e.minutes, 0))}</p>
-                    <div className="rounded-2xl bg-[#12292F] border border-white/10 divide-y divide-white/5">
-                      {es.map((e, i) => (
-                        <div key={i} className="flex justify-between px-4 py-2.5 text-sm"><span className="truncate">{e.title}</span><span className="text-amber-300 tabular-nums">{e.minutes > 0 ? '+' : ''}{e.minutes}m <span className="text-slate-500 text-xs ml-1">{new Date(e.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span></span></div>
-                      ))}
-                    </div>
-                  </div>
-                ))}
-                <p className="text-xs text-slate-500 px-1">Detailed history is stored on this device. Quotas and totals sync via your account.</p>
-              </section>
+            <div className="space-y-3">
+              {dailyTasks.map(t => <TaskCard key={t.id} task={t} onLogTime={handleLogTime} onReset={handleResetTask} onDelete={handleDeleteTask} />)}
             </div>
           )}
-        </main>
-      </div>
+        </section>
 
-      {tab === 'today' && tasks.length > 0 && (
-        <button onClick={() => setForm('new')} aria-label="New budget" className="fixed right-5 bottom-[calc(5.5rem+env(safe-area-inset-bottom))] z-20 h-14 w-14 rounded-full bg-amber-300 text-[#0B1F24] shadow-lg shadow-black/40 grid place-items-center active:scale-95"><Plus size={26} strokeWidth={2.5} /></button>
-      )}
+        <section>
+          <h2 className="text-sm font-bold text-slate-500 uppercase tracking-widest mb-3 flex items-center gap-2"><Activity size={14}/> Weekly Budgets</h2>
+          {weeklyTasks.length === 0 ? (
+             <p className="text-sm text-slate-600 italic">No weekly budgets set.</p>
+          ) : (
+            <div className="space-y-3">
+              {weeklyTasks.map(t => <TaskCard key={t.id} task={t} onLogTime={handleLogTime} onReset={handleResetTask} onDelete={handleDeleteTask} />)}
+            </div>
+          )}
+        </section>
+      </main>
 
-      <nav className="fixed bottom-0 inset-x-0 z-30 bg-[#0B1F24]/90 backdrop-blur border-t border-white/10 pb-[env(safe-area-inset-bottom)]">
-        <div className="max-w-md mx-auto grid grid-cols-3">
-          {tabs.map(([id, Icon, label]) => (
-            <button key={id} onClick={() => setTab(id)} className={`flex flex-col items-center gap-1 py-3 text-xs ${tab === id ? 'text-amber-300' : 'text-slate-500'}`}><Icon size={22} />{label}</button>
-          ))}
+      {/* Floating Action Button */}
+      <button 
+        onClick={() => setShowAddModal(true)} 
+        className="fixed bottom-6 right-6 lg:right-1/3 bg-indigo-600 text-white p-4 rounded-full shadow-xl shadow-indigo-900/20 hover:bg-indigo-500 transition transform hover:scale-105 z-40"
+      >
+        <Plus size={24} />
+      </button>
+
+      {/* Add Task Modal */}
+      {showAddModal && (
+        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-in fade-in zoom-in-95 duration-200">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-sm shadow-2xl overflow-hidden">
+            <div className="p-5 border-b border-slate-800">
+              <h3 className="text-lg font-bold text-slate-100">New Time Budget</h3>
+            </div>
+            <form onSubmit={handleAddTask} className="p-5 space-y-5">
+              <div>
+                <label className="block text-xs text-slate-400 mb-1.5 uppercase tracking-wide">Activity Name</label>
+                <input required type="text" placeholder="e.g. Project Research" value={title} onChange={e => setTitle(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-lg px-4 py-2.5 text-white focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition" />
+              </div>
+
+              <div>
+                <label className="block text-xs text-slate-400 mb-1.5 uppercase tracking-wide">Cadence</label>
+                <div className="flex gap-2 bg-slate-950 p-1 rounded-lg border border-slate-800">
+                  <button type="button" onClick={() => setCadence('daily')} className={`flex-1 py-2 rounded-md text-sm font-medium transition ${cadence === 'daily' ? 'bg-indigo-600 text-white shadow' : 'text-slate-500 hover:text-slate-300'}`}>Daily</button>
+                  <button type="button" onClick={() => setCadence('weekly')} className={`flex-1 py-2 rounded-md text-sm font-medium transition ${cadence === 'weekly' ? 'bg-indigo-600 text-white shadow' : 'text-slate-500 hover:text-slate-300'}`}>Weekly</button>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs text-slate-400 mb-1.5 uppercase tracking-wide">Target Quota</label>
+                <div className="flex gap-3">
+                  <div className="flex-1">
+                    <input type="number" min="0" placeholder="Hours" value={hours} onChange={e => setHours(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-lg px-4 py-2.5 text-white focus:outline-none focus:border-indigo-500 text-center" />
+                  </div>
+                  <div className="flex-1">
+                    <input type="number" min="0" max="59" placeholder="Mins" value={minutes} onChange={e => setMinutes(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-lg px-4 py-2.5 text-white focus:outline-none focus:border-indigo-500 text-center" />
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex gap-3 pt-2">
+                <button type="button" onClick={() => setShowAddModal(false)} className="flex-1 py-2.5 rounded-lg text-sm font-semibold text-slate-400 hover:bg-slate-800 transition">Cancel</button>
+                <button type="submit" className="flex-1 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-sm font-semibold transition">Save Budget</button>
+              </div>
+            </form>
+          </div>
         </div>
-      </nav>
-
-      {form && (
-        <>
-          <TaskForm task={form === 'new' ? null : form} onSave={saveTask} onClose={() => setForm(null)} />
-          {form !== 'new' && <button onClick={removeTask} className="fixed z-50 left-1/2 -translate-x-1/2 bottom-[calc(0.75rem+env(safe-area-inset-bottom))] flex items-center gap-2 text-sm text-rose-300 bg-[#0B1F24] rounded-full px-4 py-2 border border-rose-300/30"><Trash2 size={14} />Delete budget</button>}
-        </>
       )}
-      {custom && <CustomLog task={custom} onClose={() => setCustom(null)} onLog={(n) => { applyLog(custom, n); setCustom(null); }} />}
-      {toast && <div className="fixed top-[calc(1rem+env(safe-area-inset-top))] left-1/2 -translate-x-1/2 z-50 rounded-full bg-slate-100 text-[#0B1F24] text-sm font-medium px-4 py-2 shadow-xl max-w-[90vw]">{toast}</div>}
     </div>
   );
 }
 
-/* ───────────── Root ───────────── */
+// --- Authentication Component ---
+function Auth() {
+  const [loading, setLoading] = useState(false);
+  const [isLogin, setIsLogin] = useState(true);
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [errorMsg, setErrorMsg] = useState(null);
+
+  const handleAuth = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+    setErrorMsg(null);
+    
+    if (isLogin) {
+       const { error } = await supabase.auth.signInWithPassword({ email, password });
+       if (error) setErrorMsg(error.message);
+    } else {
+       const { error } = await supabase.auth.signUp({ email, password });
+       if (error) setErrorMsg(error.message);
+       else alert('Success! Check your email or sign in if auto-confirmed.');
+    }
+    setLoading(false);
+  };
+
+  return (
+    <div className="min-h-screen bg-slate-950 flex flex-col justify-center items-center p-4 selection:bg-rose-500/30">
+      <div className="w-full max-w-md bg-slate-900 border border-slate-800 rounded-3xl shadow-2xl p-8">
+        <div className="flex justify-center mb-6">
+          <div className="bg-slate-950 p-4 rounded-full shadow-inner border border-slate-800">
+            <Zap size={32} className="text-rose-500" />
+          </div>
+        </div>
+        
+        <h2 className="text-2xl font-bold text-center text-white mb-2 tracking-tight">Welcome to ChronosPulse</h2>
+        <p className="text-slate-400 text-center text-sm mb-8">Master your time budgets and build momentum.</p>
+
+        {errorMsg && <div className="bg-rose-500/10 border border-rose-500/50 text-rose-400 text-sm p-3 rounded-lg mb-6">{errorMsg}</div>}
+
+        <form onSubmit={handleAuth} className="space-y-4">
+          <div>
+            <label className="block text-xs font-semibold text-slate-400 mb-1.5 uppercase tracking-wide">Email</label>
+            <input required type="email" value={email} onChange={e => setEmail(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-indigo-500 transition" placeholder="you@example.com" />
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-slate-400 mb-1.5 uppercase tracking-wide">Password</label>
+            <div className="relative">
+              <input required type={showPassword ? "text" : "password"} value={password} onChange={e => setPassword(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-indigo-500 transition pr-12" placeholder="••••••••" />
+              <button type="button" onClick={() => setShowPassword(!showPassword)} className="absolute right-3 top-3.5 text-slate-500 hover:text-slate-300 transition">
+                {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+              </button>
+            </div>
+          </div>
+
+          <button type="submit" disabled={loading} className="w-full bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white font-semibold py-3 rounded-xl shadow-lg transition transform active:scale-95 disabled:opacity-70 mt-2">
+            {loading ? 'Processing...' : (isLogin ? 'Sign In' : 'Create Account')}
+          </button>
+        </form>
+
+        <div className="mt-6 text-center">
+          <button type="button" onClick={() => setIsLogin(!isLogin)} className="text-sm text-slate-400 hover:text-white transition">
+            {isLogin ? "Don't have an account? Sign up" : "Already have an account? Sign in"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ==========================================
+// 4. MAIN APP ENTRY
+// ==========================================
 export default function App() {
-  const [session, setSession] = useState(undefined);
+  const [session, setSession] = useState(null);
+  const [appLoading, setAppLoading] = useState(true);
 
   useEffect(() => {
-    if (!supabase) { setSession(null); return; }
-    supabase.auth.getSession().then(({ data }) => setSession(data.session));
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_e, s) => setSession(s));
+    if (!isConfigured) return;
+    
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setSession(session);
+      setAppLoading(false);
+    });
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setSession(session);
+    });
+
     return () => subscription.unsubscribe();
   }, []);
 
-  useEffect(() => {
-    if ('serviceWorker' in navigator && import.meta.env.PROD) navigator.serviceWorker.register('/sw.js').catch(() => {});
-  }, []);
+  if (!isConfigured) {
+    return (
+      <div className="min-h-screen bg-slate-950 text-slate-200 flex flex-col items-center justify-center p-6 text-center">
+        <Zap className="text-rose-500 mb-4" size={48} />
+        <h1 className="text-2xl font-bold mb-2 text-white">Configuration Missing</h1>
+        <p className="text-slate-400 max-w-md leading-relaxed">
+          Please set <code className="bg-slate-900 text-indigo-400 px-1.5 py-0.5 rounded border border-slate-800">VITE_SUPABASE_URL</code> and <code className="bg-slate-900 text-indigo-400 px-1.5 py-0.5 rounded border border-slate-800">VITE_SUPABASE_ANON_KEY</code> in your environment to launch ChronosPulse.
+        </p>
+      </div>
+    );
+  }
 
-  if (!supabase) return <Setup />;
-  if (session === undefined) return <Splash />;
-  return session ? <Tracker key={session.user.id} user={session.user} /> : <Auth />;
+  if (appLoading) return <div className="min-h-screen bg-slate-950 flex items-center justify-center"><Activity className="animate-spin text-indigo-500" size={32} /></div>;
+
+  return session ? <Dashboard session={session} /> : <Auth />;
 }
