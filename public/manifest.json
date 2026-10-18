@@ -1,20 +1,14 @@
 {
+  "name": "ChronosPulse",
   "short_name": "ChronosPulse",
-  "name": "ChronosPulse - Time Budget Tracker",
-  "icons": [
-    {
-      "src": "/icon-192.png",
-      "type": "image/png",
-      "sizes": "192x192"
-    },
-    {
-      "src": "/icon-512.png",
-      "type": "image/png",
-      "sizes": "512x512"
-    }
-  ],
+  "description": "Time-budgeted task and quota tracker",
   "start_url": "/",
-  "background_color": "#0f172a",
-  "theme_color": "#0f172a",
-  "display": "standalone"
+  "display": "standalone",
+  "background_color": "#0B1F24",
+  "theme_color": "#0B1F24",
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" },
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
 }
